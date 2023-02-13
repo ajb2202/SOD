@@ -1,0 +1,18 @@
+<html>
+<body>
+<?php
+include('DbCon.php');
+$sql = "SELECT * FROM sysboot";
+$result = $conn->query($sql);
+if ($result->num_rows > 0) {
+    // output data of each row
+    while($row = $result->fetch_assoc()) {
+        echo "<br> Host:  $row[host] </br> "; 
+    }
+} else {
+    echo "0 results";
+}
+$conn->close();
+?>
+</body>
+</html>

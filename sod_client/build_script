@@ -1,0 +1,39 @@
+#!/bin/bash
+
+WORKSPACE=`pwd`
+JOB_NAME=SoD
+USER=`/usr/bin/id -u`
+GROUP=
+
+# Check for Updates in the spec file 
+
+testrel=$(/usr/bin/git diff HEAD~1 | awk '/[\t ]*\+[\t ]*Release/ { print "NEWREL"; exit 0 }') 
+
+# If there have been no committed updates exit
+
+if [ "$testrel" != "NEWREL" ]; then
+    echo "There is no new release in the rpm spec files - do not rebuild."
+    exit 0
+fi
+
+# Delete old tarball
+rm -rf rpmbuild ${JOB_NAME}.tar.gz
+
+# Create new rpm build environment
+mkdir -p rpmbuild/{BUILD,RPMS,SOURCES/${JOB_NAME},SPECS,SRPMS}
+
+#Create the new tarball for RPM
+tar --exclude-vcs --exclude='build_script' --exclude='rpmbuild' --exclude='misc' -cp * | (cd rpmbuild/SOURCES/${JOB_NAME} ; tar xp)
+cd ${WORKSPACE}/rpmbuild/SOURCES
+tar -cvzf ${JOB_NAME}.tar.gz ${JOB_NAME}
+cd ${WORKSPACE}
+cp misc/specs/*.spec rpmbuild/SPECS/
+sed -i "s/^[\t ]*Source0:.*/Source0: ${JOB_NAME}.tar.gz/g" rpmbuild/SPECS/*.spec
+sed -i "s/^[\t ]*%setup[\t ]\+-n[\t ]\+.*/%setup -n ${JOB_NAME}/g" rpmbuild/SPECS/*.spec
+chown -R ${USER}:${GROUP} rpmbuild
+rpmbuild --define "_topdir %(pwd)/rpmbuild" --define "debug_package %{nil}" -ba rpmbuild/SPECS/*.spec
+SOD_RPM=`find rpmbuild/RPMS -name "SoD*.rpm"`
+#Load into Rhel7 repo
+curl -X PUT https://artifactory/ -T $SOD_RPM -k
+#Load into Rhel6 repo
+curl -X PUT https://artifactory/ -T $SOD_RPM -k

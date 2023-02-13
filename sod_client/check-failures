@@ -1,0 +1,561 @@
+#!/bin/sh
+
+if [[ $(/usr/bin/id -u) -ne 0 ]]; then
+    echo "Not running as root"
+    exit
+fi
+
+export PGSYSCONFDIR=/etc
+export PGSERVICE=start_of_day
+
+rm -f /tmp/CHK-COMPLETE
+
+
+DATE=`date '+%y%m%d'`
+DAY=`date '+%A'`
+FirstOfMonth=`date '+%d'`
+VirtChk=`dmidecode -t system | grep Product | egrep 'KVM|VMware'`
+Model="`dmidecode -s system-product-name |grep -v ^# | cut -f2 -d' '`"
+BIOS_version=`dmidecode -s bios-version`
+iDRAC_version=`racadm getversion |awk -F"=" '/DRAC/{print $2}'`
+MailRecipient="support@admin.com"
+host=`hostname | cut -d. -f1`
+tools=''
+DellChk='/opt/dell/srvadmin/bin/omreport'
+rh6_OK="696.18.7"
+rh7_OK="693.11.6"
+
+verchk () {
+  echo "$@" | awk -F. '{ printf("%d%03d%03d%03d\n", $1,$2,$3,$4); }'
+}
+
+RH6=false
+RH7=false
+
+RHL=`lsb_release -rs|cut -f1 -d.`
+if [ "$RHL" = "6" ]; then
+  RH6=true
+else
+  RH7=true
+fi
+
+########################## NO LONGER REQUIRED ##########################
+#
+# Check for Spectre / Meltdown 
+#
+#kernel=`uname -r`
+#rh6_version=`echo "$kernel" | grep el6 | cut -d - -f2 | cut -d. -f1-3`
+#rh7_version=`echo "$kernel" | grep el7 | cut -d - -f2 | cut -d. -f1-3`
+#
+#if [ "$RH6" == "true" ]; then
+  #if [ $(verchk $rh6_version) -ge $(verchk $rh6_OK) ]; then
+    #OS=Pass
+  #else
+    #OS=Fail
+  #fi
+#fi
+#
+#if [ "$RH7" == "true" ]; then
+  #if [ $(verchk $rh7_version) -ge $(verchk $rh7_OK) ]; then
+    #OS=Pass
+  #else
+    #OS=Fail
+  #fi
+#fi
+#
+#case "$Model" in
+  #R610) BIOSFIX="6.5.0"
+        #DRACFIX="2.90"
+            #;;
+  #R710) BIOSFIX="6.5.0"
+        #DRACFIX="2.90"
+            #;;
+  #R620) BIOSFIX="2.6.1"
+        #DRACFIX="2.52.52.52"
+            #;;
+  #R720) BIOSFIX="2.6.1"
+        #DRACFIX="2.52.52.52"
+            #;;
+  #R[67]30) BIOSFIX=2.7.1
+        #DRACFIX=2.52.52.52
+            #;;
+  #R[67]40) BIOSFIX=1.3.7
+        #DRACFIX=3.15.17.15
+            #;;
+  #* )   BIOSFIX="" ; BIOSFL="" ; DRACFIX="" ; DRACFL=""; RPMREQ="";;
+#esac
+
+#if [ "$BIOSFIX"x == x ]; then
+  #BIOS=Fail
+#fi
+#
+#if [ $(verchk $BIOS_version) -ge $(verchk $BIOSFIX) ]; then
+  #BIOS=Pass
+#else
+  #IDRAC=Fail
+#fi
+#
+#if [ $(verchk $iDRAC_version) -ge $(verchk $DRACFIX) ]; then
+  #IDRAC=Pass
+#else
+  #IDRAC=Fail
+#fi
+########################## NO LONGER REQUIRED ##########################
+
+#
+# Check reboot lock file
+#
+CronReboot=`crontab -l -u root | grep 'eci_boot_prod.bsh'`
+if [ "$CronReboot" = "" ]; then
+  LockFile=NA
+else
+  if [ -f /apps/stop.boot ]; then
+    LockFile=Fail
+  else
+    LockFile=Pass
+  fi
+fi
+
+#
+# Check uptime > 90 days
+#
+IF_SCALE=`echo $host | grep vapscl`
+if [ "$IF_SCALE" = "" ]; then
+  up=`uptime | awk '{print $3}'`
+  if [ "$up" -gt 90 ]; then
+    echo "$host: $up days - schedule a reboot"  | mailx -s "SoD WARNING: server $host been online for $up days" "$MailRecipient"
+    uptime=Fail
+  else
+    uptime=Pass
+  fi
+else
+  uptime=Pass
+fi
+
+#
+# Check NIC down
+#
+NICFail=`$DellChk chassis nics|egrep "Name|Status" | grep Disconnected`
+if [ "$NICFail" != "" ]; then
+  echo "$host: '$NICFail'"  | mailx -s "SoD WARNING: server $host server reporting NIC issue" "$MailRecipient"
+  NicDown=Fail
+else
+  NicDown=Pass
+fi
+
+#
+# Check NIC duplex
+#
+HalfDuplex=`| grep eth | grep Half | awk '{print $3}' | grep yes`
+if [ "$HalfDuplex" != "" ]; then
+  line=`| grep -i half`
+  echo "$host: $line"  | mailx -s "SoD WARNING: server $host NIC reporting Half Duplex" "$MailRecipient"
+  NicDuplex=Fail
+else
+  NicDuplex=Pass
+fi
+
+#
+# Check Prod servers have a bond
+#
+if [ -f /proc/net/bonding/bond0 ]; then
+  SLAVES=`cat /proc/net/bonding/bond0 | grep "Slave Interface" | wc -l`
+  if [ "$SLAVES" -lt 2 ]; then
+    echo "$host: NIC reporting only one slave"  | mailx -s "SoD WARNING: server $host NIC reporting only one slave" "$MailRecipient"
+    NicBond=Fail
+  else
+    NicBond=Pass
+  fi
+fi
+
+#
+# Check Prod servers have both slaves of bond up and running
+#
+if [ -f /proc/net/bonding/bond0 ]; then
+  cat /proc/net/bonding/bond0 | grep 'Slave Interface' | awk '{print $3}' > /tmp/bond-slaves
+  for nic in `cat /tmp/bond-slaves`
+  do
+    slave_state=`cat /sys/class/net/$nic/operstate` 
+      if [ "$slave_state" == "down" ]; then
+        touch /tmp/NicBondDown
+      fi
+  done
+fi
+
+if [ -f /tmp/NicBondDown ]; then
+  echo "$host: NIC reporting one bond slave is down"  | mailx -s "SoD WARNING: server $host NIC Bond Slave down" "$MailRecipient"
+  NicBondDown=Fail
+else
+  NicBondDown=Pass
+fi
+
+rm -f /tmp/NicBondDown
+rm -f /tmp/bond-slaves
+
+#
+# Check Prod bond on different network switches on 1st of the month
+#
+if [ "$VirtChk" = "" ]; then
+  if [ "$FirstOfMonth" -eq 1 ]; then
+    ls -1 /tmp/*switchinfo > /tmp/slaves
+    while read -r inline
+    do
+      if [ ! -s "$inline" ]; then
+        nic=`echo $inline | cut -d / -f3 | cut -d. -f1`
+        touch /tmp/no-switch-info.$nic
+      fi
+    done < /tmp/slaves
+
+    EmptySwitchCount=`ls /tmp/no-switch-info.* | wc -l`
+    if [ "$EmptySwitchCount" -eq 2 ]; then
+      echo "$host: server reports no switch info on both NIC bond slaves"  | mailx -s "SoD WARNING: server $host reports no switch info on both NIC bond slaves" "$MailRecipient"
+    elif [ "$EmptySwitchCount" -eq 1 ]; then
+      empty=`ls /tmp/no-switch-info.* | cut -d. -f2`
+      echo "$host: server reports no switch info on $empty"  | mailx -s "SoD WARNING: server $host reports no switch info on $empty" "$MailRecipient"
+    else
+      SwitchDiff=`diff /tmp/*switchinfo`
+      if [ "$SwitchDiff" = "" ]; then
+        echo "$host: server reports both NIC bond slaves on same network switch"  | mailx -s "SoD WARNING: server $host both NIC bond slaves on same network switch" "$MailRecipient"
+        NicSwitch=Fail
+      else
+        NicSwitch=Pass
+      fi
+    fi
+  else
+    NicSwitch=NA
+  fi
+else
+  NicSwitch=NA
+fi
+
+rm -f /tmp/slaves
+rm -f /tmp/no-switch-info.*
+rm -f /tmp/*.tcpdump
+rm -f /tmp/*switchinfo
+
+#
+# Check CPU
+#
+CPUFail=`$DellChk chassis processors | grep Status | grep -v Ok`
+if [ "$CPUFail" != "" ]; then
+  echo "$host: '$CPUFail'"  | mailx -s "SoD WARNING: server $host server reporting CPU issue" "$MailRecipient"
+  cpu=Fail
+else
+  cpu=Pass
+fi
+
+#
+# Check Power
+#
+PowerFail=`$DellChk chassis pwrsupplies | grep Status | egrep -v 'Location|Online|Redundancy' | grep -v Ok`
+if [ "$PowerFail" != "" ]; then
+  echo "$host: '$PowerFail'"  | mailx -s "SoD WARNING: server $host server reporting PSU issue" "$MailRecipient"
+  power=Fail
+else
+  power=Pass
+fi
+
+#
+# Check Disks
+#
+DiskFail=`$DellChk storage pdisk controller=0 | grep Status | grep -v Power | grep -v Ok`
+if [ "$DiskFail" != "" ]; then
+  echo "$host: '$DiskFail'"  | mailx -s "SoD WARNING: server $host server reporting Disk issue" "$MailRecipient"
+  disk=Fail
+else
+  disk=Pass
+fi
+
+#
+# Check Hardware
+#
+OMFail=`$DellChk chassis | grep : | grep -v COMPONENT | grep -v Ok`
+if [ "$OMFail" != "" ]; then
+  echo "$host: $OMFail"  | mailx -s "SoD WARNING: server $host omreport reporting H/W issue" "$MailRecipient"
+  hardware=Fail
+else
+  hardware=Pass
+fi
+
+#
+# Check Memory
+#
+MemoryOK=`$DellChk chassis memory | grep Status | egrep -v "Ok|Unknown"`
+if [ "$MemoryOK" != "" ]; then
+  echo "$host: server reporting failed DIMM"  | mailx -s "SoD WARNING: server $host reporting failed DIMM" "$MailRecipient"
+  memory=Fail
+else
+  memory=Pass
+fi
+
+#
+# Check Fans
+#
+FanOK=`$DellChk chassis | grep ':' | grep -v COMPONENT | grep Fans | grep -v Ok`
+if [ "$FanOK" != "" ]; then
+  echo "$host: server reporting failed Fan"  | mailx -s "SoD WARNING: server $host reporting failed Fan" "$MailRecipient"
+  fans=Fail
+else
+  fans=Pass
+fi
+
+#
+# Check PERC
+#
+PercOK=`$DellChk storage enclosure | grep Status | grep Ok`
+if [ "$PercOK" = "" ]; then
+  echo "$host: server reporting PERC Controller issues"  | mailx -s "SoD WARNING: server $host reporting PERC Controller issues" "$MailRecipient"
+  perc=Fail
+else
+  perc=Pass
+fi
+
+#
+# Check Battery
+#
+BatteryOK=`$DellChk chassis batteries | grep Status | grep -v Ok`
+if [ "$BatteryOK" != "" ]; then
+  echo "$host: server reporting failed Battery"  | mailx -s "SoD WARNING: server $host reporting failed Battery" "$MailRecipient"
+  battery=Fail
+else
+  battery=Pass
+fi
+
+#
+# Check C-State disabled
+#
+counto=0
+count=0
+if [ -f /tmp/.check_bios ]; then 
+ rm -f /tmp/.check_bios
+fi 
+
+if [ -f /tmp/.check_bios_pass ]; then
+ rm -f /tmp/.check_bios_pass
+fi
+
+$DellChk chassis biossetup > /tmp/.out
+
+BIOSOUT=/tmp/.out
+
+countm=`grep "C States" $BIOSOUT | wc -l`
+if [ $countm -eq 0 ]; then
+  countm1=`grep -i "C1-E" $BIOSOUT | egrep -i "disabled|enabled" | wc -l`
+  if [ $countm1 -eq 0 ]; then
+    counto=`grep -A1 "C1-E" $BIOSOUT | grep -iv "disabled" | wc -l`
+    cstates=`grep -A1 "C1-E" $BIOSOUT | tail -1 `
+  else
+    count=`grep -i "C1-E" $BIOSOUT | grep -vi disabled | wc -l`
+    cstates=`grep -i "C1-E" $BIOSOUT `
+  fi
+else
+  count=`grep "C States" $BIOSOUT | grep -vi disabled |wc -l `
+  cstates=`grep "C States" $BIOSOUT `
+fi
+if [[ $count -gt 0 || $counto -gt 1 ]]; then
+  echo -e "[ Fail ] $i [ $cstates ] \n" >> /tmp/.check_bios
+else
+  echo -e "[ Pass] $i [ $cstates ] \n" >>/tmp/.check_bios_pass
+fi
+
+if [ -f /tmp/.check_bios ]; then
+ breakcnt=`cat /tmp/.check_bios | wc -l`
+else
+ breakcnt=0
+fi
+
+if [ $breakcnt -gt 0 ]; then
+  cState=Fail
+  echo "$host: server reporting C-State not disabled"  | mailx -s "SoD WARNING: server $host reporting C-State not disabled" "$MailRecipient"
+else
+  cState=Pass
+fi
+
+#
+# Check Max C-State is 0G
+#
+maxCstateOK=`cat /sys/module/intel_idle/parameters/max_cstate`
+if [ "$maxCstateOK" != "0" ]; then
+  echo "$host: server reporting max C State not zero"  | mailx -s "SoD WARNING: server $host reporting max C State not zero" "$MailRecipient"
+  maxcstate=Fail
+else
+  maxcstate=Pass
+fi
+
+#
+# Check PERC Battery
+#
+PercBatteryOK=`$DellChk storage battery | grep State | grep -v Learn | grep -v Ready`
+if [ "$PercBatteryOK" != "" ]; then
+  echo "$host: server reporting failed PERC Battery"  | mailx -s "SoD WARNING: server $host reporting failed PERC Battery" "$MailRecipient"
+  PercBattery=Fail
+else
+  PercBattery=Pass
+fi
+
+#
+# Check Dell ESM Log
+#
+EsmLogOK=`$DellChk system esmlog | grep -v 'Non-Critical' | grep Critical -A2`
+if [ "$EsmLogOK" != "" ]; then
+  /usr/bin/printf "$host:\n$EsmLogOK"  | mailx -s "SoD WARNING: server $host reporting ESM Log errors" "$MailRecipient"
+fi
+
+#
+# Check Cron
+#
+if [ "$RH6" == "true" ]; then
+  CRONFAIL=`/sbin/service crond status | grep running`
+  if [ "$CRONFAIL" = "" ]; then
+    echo "$host: server reporting cron not running"  | mailx -s "SoD WARNING: server $host reporting cron not running" "$MailRecipient"
+    cron=Fail
+  else
+    cron=Pass
+  fi
+fi
+
+if [ "$RH7" == "true" ]; then
+  CRONFAIL=`/bin/systemctl status crond.service | grep "active (running)"`
+  if [ "$CRONFAIL" = "" ]; then
+    echo "$host: server reporting cron not running"  | mailx -s "SoD WARNING: server $host reporting cron not running" "$MailRecipient"
+    cron=Fail
+  else
+    cron=Pass
+  fi
+fi
+
+#
+# Check Time Sync Process
+#
+
+PTP=`rpm -q sfptpd | grep "not installed"`
+if [ "$PTP" = "" ]; then
+  PTP=true
+else
+  PTP=false
+fi
+
+if [ "$PTP" == "true" ]; then
+  if [ "$RH6" == "true" ]; then
+    tkstatus=/usr/bin/tkstatus
+  else
+    tkstatus=/bin/tkstatus
+  fi
+  PTPFAIL=`$tkstatus | grep "not running"`
+  if [ "$PTPFAIL" != "" ]; then
+    echo "$host: server reporting PTP not running"  | mailx -s "SoD WARNING: server $host reporting PTP not running" "$MailRecipient"
+    time=Fail
+  else
+    time=Pass
+  fi
+  if [ "$time" == "Pass" ]; then
+    PTPSTAT=`$tkstatus | grep "Primary source type:" | grep PTP`
+    if [ "$PTPSTAT" = "" ]; then
+      echo "$host: server reporting PTP not using PTP but NTP"  | mailx -s "SoD WARNING: server $host reporting PTP not using PTP but NTP" "$MailRecipient"
+      timestat=Fail
+    else
+      timestat=Pass
+    fi
+  fi
+else
+   if [ "$RH6" == "true" ]; then
+    NTPFAIL=`/sbin/service ntpd status | grep running`
+    if [ "$NTPFAIL" = "" ]; then
+     echo "$host: server reporting NTP not running"  | mailx -s "SoD WARNING: server $host reporting NTP not running" "$MailRecipient"
+     time=Fail
+    else
+      time=Pass
+    fi
+    NTPSTAT=`/usr/bin/ntpstat | grep unsynchronised`
+    if [ "$NTPSTAT" != "" ]; then
+      echo "$host: server reporting NTP not synchronised"  | mailx -s "SoD WARNING: server $host reporting NTP not synchronised" "$MailRecipient"
+      timestat=Fail
+    else
+      timestat=Pass
+    fi
+  fi
+
+  if [ "$RH7" == "true" ]; then
+    NTPFAIL=`/bin/systemctl status ntpd.service | grep "active (running)"`
+    if [ "$NTPFAIL" = "" ]; then
+      echo "$host: server reporting NTP not running"  | mailx -s "SoD WARNING: server $host reporting NTP not running" "$MailRecipient"
+      time=Fail
+    else
+      time=Pass
+    fi
+    NTPSTAT=`/usr/bin/ntpstat | grep unsynchronised`
+    if [ "$NTPSTAT" != "" ]; then
+      echo "$host: server reporting NTP not synchronised"  | mailx -s "SoD WARNING: server $host reporting NTP not synchronised" "$MailRecipient"
+      timestat=Fail
+    else
+      timestat=Pass
+    fi
+  fi
+fi
+
+#
+# Test HIDs running
+#
+hidsOK=`ps -ef | grep Symantec | grep -v grep | wc -l`
+if [ "$hidsOK" != "3" ]; then
+  echo "$host: server reporting HIDs not running fully"  | mailx -s "SoD WARNING: server $host reporting HIDs not running fully" "$MailRecipient"
+  hids=Fail
+else
+  hids=Pass
+fi
+
+#
+# Test mon running
+#
+#monOK=`ps -ef | grep "" | grep -v grep | wc -l`
+monOK="1"
+if [ "$monOK" != "1" ]; then
+  echo "$host: server reporting mon not running fully"  | mailx -s "SoD WARNING: server $host reporting mon not running fully" "$MailRecipient"
+  mon=Fail
+else
+  mon=Pass
+fi
+
+#
+# Test if server has SAN
+#
+SAN=`cat /proc/scsi/scsi | grep -i hitachi`
+if [ "$SAN" != "" ]; then
+  #
+  # Check SAN HBAs online
+  #
+  TotalHBAsOnline=`| grep host | grep Online | wc -l`
+    if [ "$TotalHBAsOnline" == "1" ] || [ "$TotalHBAsOnline" == "3" ]; then
+    echo "$host: server reporting HBA down"  | mailx -s "SoD WARNING: server $host reporting HBA down" "$MailRecipient"
+    hba=Fail
+  else
+    hba=Pass
+  fi
+
+  #
+  # Check SAN Paths
+  #
+  OfflineLUNs=`/opt/DynamicLinkManager/bin/dlnkmgr view -lu | grep '/dev/sd' | grep -i Offline | wc -l`
+  if [ "$OfflineLUNs" -gt "0" ]; then
+    echo "$host: server reporting HBA Paths Offline"  | mailx -s "SoD WARNING: server $host reporting HBA Paths Offline" "$MailRecipient"
+    luns=Fail
+  else
+    luns=Pass
+  fi
+else
+  hba=NA
+  luns=NA
+fi
+# If /etc/db.conf is present use mysql/mariadb
+
+if [ -f /etc/pg_service.conf ]; then
+echo "Using PostGreSQL Database"
+/usr/bin/psql -c "INSERT INTO sod (host,uptime,LockFile,NicDown,NicBond,NicBondDown,NicDuplex,NicSwitch,cpu,disk,power,hardware,fans,perc,battery,cState,maxcstate,PercBattery,memory,cron,time,timestat,hids,mon,hba,luns) values ('$host','$uptime','$LockFile','$NicDown','$NicBond','$NicBondDown','$NicDuplex','$NicSwitch','$cpu','$disk','$power','$hardware','$fans','$perc','$battery','$cState','$maxcstate','$PercBattery','$memory','$cron','$time','$timestat','$hids','$mon','$hba','$luns');"
+
+elif [ -f /etc/db.conf ]; then
+echo "Using MySQL/Mariadb Database"
+/usr/bin/mysql --defaults-extra-file=/etc/db.conf -e "insert into sod (host,uptime,LockFile,NicDown,NicBond,NicBondDown,NicDuplex,NicSwitch,cpu,disk,power,hardware,fans,perc,battery,cState,maxcstate,PercBattery,memory,cron,time,timestat,hids,mon,hba,luns) values ('$host','$uptime','$LockFile','$NicDown','$NicBond','$NicBondDown','$NicDuplex','$NicSwitch','$cpu','$disk','$power','$hardware','$fans','$perc','$battery','$cState','$maxcstate','$PercBattery','$memory','$cron','$time','$timestat','$hids','$mon','$hba','$luns');"
+else
+echo "No Database config for MySQL/Mariadb or PostGreSQL Found"
+fi
+touch /tmp/CHK-COMPLETE

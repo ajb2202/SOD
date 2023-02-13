@@ -1,0 +1,9 @@
+/sbin/ifconfig | grep Link | grep -v lo | awk '{print $1}' > /tmp/nics.$$
+while read nic
+do
+  addr=`ifconfig $nic | grep "inet addr"`
+  if [ "$addr" != "" ]; then
+    echo "$nic:$addr"
+  fi
+done < /tmp/nics.$$
+rm -f /tmp/nics.$$

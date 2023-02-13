@@ -1,0 +1,13 @@
+---
+- hosts: localhost
+  remote_user: root
+  gather_facts: true
+
+  vars:
+    logfile: /var/log/ansible-pull-build.log
+    workdir: /root/ansible
+#    repo_url: https://bitbucket/.git
+#    branch: master
+
+  roles:
+    - { role: PostGreSQL, tags: [ 'postgresql' ] } 

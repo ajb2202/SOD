@@ -1,0 +1,7 @@
+---
+# handlers file for PostGres
+
+- name: restart postgresql
+  systemd:
+    name: "{{ postgresql_daemon }}"
+    state: "{{ postgresql_restarted_state }}"

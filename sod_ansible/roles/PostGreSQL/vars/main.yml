@@ -1,0 +1,112 @@
+---
+# vars file for PostGres
+#
+#pgresvars:
+#  - { lvname: 'pgresvol', vgname: 'appsvg', size: '5G', mount_point: '/postgres' }
+
+pgresdirs:
+  - { dir: '/postgres/pg_wal', perm: '700' }
+  - { dir: '/postgres/backup', perm: '700' }
+  - { dir: '/postgres/data', perm: '700' }    
+  - { dir: '/postgres/pgtempdb', perm: '700' }
+  - { dir: '/postgres/log', perm: '750' }
+
+postgresql_base_dir: "/postgres"
+postgresql_data_dir: "/postgres/data"
+postgresql_bin_path: "/usr/bin"
+postgresql_config_path: "/postgres/data"
+#postgresql_daemon: postgresql-10
+postgresql_daemon: postgresql
+postgresql_restarted_state: "restarted"
+postgresql_service_enabled: true
+#postgresql_python_library: python-psycopg2
+postgresql_python_library: python3-psycopg2
+postgresql_user: postgres
+postgresql_group: postgres
+#postgresql_listen: *
+#postgresql_port: 6524
+postgresql_port: 5432
+
+postgresql_unix_socket_directories:
+  - /var/run/postgresql
+
+pgresrpm:
+  - postgresql-libs
+  - postgresql
+  - postgresql-server
+  - postgresql-contrib
+  - python3-argcomplete.noarch
+  - python3-argh.noarch 
+  - python3-psycopg2
+  - postgresql-plperl
+  - postgresql-plpython3
+
+# Global configuration options that will be set in postgresql.conf.
+postgresql_global_config_options:
+  - option: unix_socket_directories
+    value: '{{ postgresql_unix_socket_directories | join(",") }}' 
+  - option: listen_addresses
+    value: '*'
+  - option: port
+    value: '{{ postgresql_port }}'
+
+postgresql_hba_entries:
+  - {type: local, database: all, user: postgres, auth_method: peer}
+  - {type: local, database: all, user: all, auth_method: peer}
+  - {type: host, database: all, user: all, address: '127.0.0.1/32', auth_method: md5}
+  - {type: host, database: all, user: all, address: '::1/128', auth_method: md5}
+  - {type: host, database: all, user: all, address: '0.0.0.0/0', auth_method: trust}
+  
+# Databases to ensure exist.
+postgresql_databases:
+#  - name: sysreboot
+#    port: 5432
+#    table: reboot_status
+  - name: start_of_day
+    port: 5432
+    table: sod
+
+# - name: exampledb # required; the rest are optional
+#   lc_collate: # defaults to 'en_US.UTF-8'
+#   lc_ctype: # defaults to 'en_US.UTF-8'
+#   encoding: # defaults to 'UTF-8'
+#   template: # defaults to 'template0'
+#   login_host: # defaults to 'localhost'
+#   login_password: # defaults to not set
+#   login_user: # defaults to '{{ postgresql_user }}'
+#   login_unix_socket: # defaults to 1st of postgresql_unix_socket_directories
+#   port: # defaults to not set
+#   owner: # defaults to postgresql_user
+#   state: # defaults to 'present'
+
+# Users to ensure exist.
+postgresql_users: []
+# - name: jdoe #required; the rest are optional
+#   password: # defaults to not set
+#   encrypted: # defaults to not set
+#   priv: # defaults to not set
+#   role_attr_flags: # defaults to not set
+#   db: # defaults to not set
+#   login_host: # defaults to 'localhost'
+#   login_password: # defaults to not set
+#   login_user: # defaults to '{{ postgresql_user }}'
+#   login_unix_socket: # defaults to 1st of postgresql_unix_socket_directories
+#   port: # defaults to not set
+#   state: # defaults to 'present'
+
+# Module not available in 2.7
+#postgresql_tables:
+#  - name: sod
+#    db: sysreboot
+#    port: 5432
+
+# - name: dbtable #required; the rest are optional
+#   db: # defaults to not set
+#   owner: # defaults to postgresql_user
+#   columns: # Columns that are needed.
+#   login_host: # defaults to 'localhost'
+#   login_password: # defaults to not set
+#   login_user: # defaults to '{{ postgresql_user }}'
+#   login_unix_socket: # defaults to 1st of postgresql_unix_socket_directories
+#   port: # defaults to not set
+#   state: # defaults to 'present'

@@ -1,0 +1,42 @@
+OS=`uname -s`
+DIR=/opt/SoD
+DATE=`date '+%y%m%d'`
+DAY=`date '+%A'`
+HOUR=`date '+%H'`
+MailRecipient=""
+host=`hostname | cut -d. -f1`
+
+VirtChk=`dmidecode -t system | grep Product | egrep 'KVM|VMware'`
+if [ "$VirtChk" = "" ]; then
+  #
+  # restart of DSM services
+  #
+  if [ "$DAY" = "Sunday" ] && [ "$HOUR" = "06" ]; then
+      /opt/dell/srvadmin/bin/omconfig system esmlog action=clear; /opt/dell/srvadmin/sbin/srvadmin-services.sh restart
+  fi
+
+  dsmOK=`ps -ef | grep dsm_sa_datamgr`
+  if [ "$dsmOK" = "" ]; then
+    echo "$host: server SoD cannot run DSM Services not running"  | mailx -s "SoD WARNING: server $host SoD cannot run DSM Services not running" "$MailRecipient"
+    exit 0
+  fi
+fi
+
+/bin/sleep   `/usr/bin/expr $RANDOM % 1800`
+
+if [ -f /tmp/SOD.LOCK ]; then
+  uname -n > /tmp/server-SoD-not-run
+  echo "$host: server SoD cannot run LOCK file in place"  | mailx -s "SoD WARNING: server $host SoD cannot run LOCK file in place" "$MailRecipient"
+  exit 0
+fi
+
+touch /tmp/SoD.LOCK
+
+if [ "$OS" = "Linux" ]; then
+  "$DIR"/gen-sod-report > /tmp/SoD."$DATE"
+  /bin/cp -f /tmp/SoD."$DATE" /tmp/SoD.latest
+  chmod 777 /tmp/SoD.latest
+  "$DIR"/check-failures
+fi
+
+rm -f /tmp/SoD.LOCK

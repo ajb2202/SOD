@@ -1,0 +1,50 @@
+---
+
+- name: Check if Tables exist
+  become: true
+  become_user: "{{ postgresql_user }}"
+  shell: "psql -t -p {{ item.port }} -d {{ item.name }} -c \"SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = '{{ item.table }}')\""
+  register: table_exists
+  changed_when: False
+  with_items: "{{ postgresql_databases }}"
+
+#- debug:
+#    msg: "{{ item.item.name  }}{{ item.stdout | regex_replace('(^\\s+)','') }}"
+#  with_items: "{{ table_exists.results }}"
+
+- name: Copy the psql dump file database server
+  copy:
+    src: "{{ item.item.name }}.dump.sql"
+    dest: "/var/tmp/{{ item.item.name }}.dump.sql"
+    mode: '0600'
+    owner: "{{ postgresql_user }}"
+    group: "{{ postgresql_group }}"
+  with_items: "{{ table_exists.results }}"
+  when: item.stdout | regex_replace('(^\\s+)','') == "f"
+
+- name: Importing tables into database
+  become: true
+  become_user: "{{ postgresql_user }}"
+  shell: "psql -p {{ item.item.port }} {{ item.item.name }} < /var/tmp/{{ item.item.name }}.dump.sql"
+  with_items: "{{ table_exists.results }}"
+  when: item.stdout | regex_replace('(^\\s+)','') == "f"
+
+# Module not available in Version 2.7!
+#- name: Ensure PostgreSQ tables are present in database.
+#  postgresql_table:
+#    name: "{{ item.name }}"
+#    db: "{{ item.db }}"
+#    columns: "{{ item.columns | default(omit) }} "
+#    login_host: "{{ item.login_host | default('localhost') }}"
+#    login_password: "{{ item.login_password | default(omit) }}"
+#    login_user: "{{ item.login_user | default(postgresql_user) }}"
+#    login_unix_socket: "{{ item.login_unix_socket | default(postgresql_unix_socket_directories[0]) }}"
+#    port: "{{ item.port | default(omit) }}"
+#    owner: "{{ item.owner | default(postgresql_user) }}"
+#    state: "{{ item.state | default('present') }}"
+#  with_items: "{{ postgresql_tables }}"
+#  become: true
+#  become_user: "{{ postgresql_user }}"
+# See: https://github.com/ansible/ansible/issues/16048#issuecomment-229012509
+#  vars:
+#    ansible_ssh_pipelining: true

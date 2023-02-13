@@ -1,0 +1,276 @@
+#!/bin/sh
+
+rm -f /tmp/SOD-COMPLETE
+
+RH5=false
+RH6=false
+RH7=false
+
+RHL=`lsb_release -rs|cut -f1 -d.`
+if [ "$RHL" = "5" ]; then
+  RH5=true
+fi
+
+RHL=`lsb_release -rs|cut -f1 -d.`
+if [ "$RHL" = "6" ]; then
+  RH6=true
+fi
+
+RHL=`lsb_release -rs|cut -f1 -d.`
+if [ "$RHL" = "7" ]; then
+  RH7=true
+fi
+
+if [ "$RH5" == "true" ]; then
+  PVS=/usr/sbin/pvs
+  VGS=/usr/sbin/vgs
+  LVS=/usr/sbin/lvs
+else
+  PVS=/sbin/pvs
+  VGS=/sbin/vgs
+  LVS=/sbin/lvs
+fi
+
+echo "**************************************************************************"
+echo ""
+DATE=`date '+%y%m%d'`
+echo "Start of Day report - $DATE"
+echo "================================="
+echo ""
+uname -n
+/usr/sbin/dmidecode | grep -e 'Manufacturer' -e 'Product Name' -e 'Serial Number' -e 'Firmware Revision' | head -n 4
+/opt/dell/srvadmin/bin/omreport system summary | grep "Chassis Service Tag"
+echo "OS: `uname -s`"
+up=`uptime | awk '{print $3}'`
+echo "Server Uptime: $up"
+echo ""
+echo "iDRAC Settings"
+echo "=============="
+echo ""
+/opt/dell/srvadmin/sbin/racadm getniccfg | egrep 'Static IP Address    =|Static Subnet Mask   =|Static Gateway       ='
+echo ""
+echo "CPU Status"
+echo "=========="
+echo ""
+/opt/dell/srvadmin/bin/omreport chassis processors
+echo ""
+/usr/bin/lscpu
+echo ""
+echo ""
+grep -E "cpu cores|siblings|physical id" /proc/cpuinfo | xargs -n 11 echo |sort |uniq
+echo ""
+echo "Memory Status"
+echo "============="
+echo ""
+/opt/SoD/mem.sh
+echo ""
+/opt/dell/srvadmin/bin/omreport system summary | egrep 'Total Installed Capacity|Total Maximum Capacity|Slots Available|Slots Used'
+echo ""
+/opt/dell/srvadmin/bin/omreport chassis memory | grep Size | grep MB
+echo ""
+echo "BIOS / FIRMWARE Settings"
+echo "========================"
+echo ""
+/opt/dell/srvadmin/bin/omreport system version  |egrep 'BIOS|DRAC|PERC' -A1
+echo ""
+echo "PERC Controller Settings"
+echo "========================"
+/opt/dell/srvadmin/bin/omreport storage enclosure
+echo ""
+echo "BOOT Settings"
+echo "============="
+uname -a
+cat /etc/redhat-release
+cat /proc/cmdline
+echo ""
+echo "SYSRQ Settings"
+echo "=============="
+grep "kernel.sysrq" /etc/sysctl.conf
+echo ""
+echo "NUMA Settings"
+echo "============="
+/usr/bin/numactl --hardware
+echo ""
+echo "BIOS Settings"
+echo "============="
+echo ""
+/opt/dell/srvadmin/bin/omreport chassis biossetup|egrep -i -e "Virtualization Technology|Logical Processor|Logical Processor Idling|C1E|C States|Turbo Boost|CPU Power Management"
+echo ""
+echo "C-State"
+cat /sys/module/intel_idle/parameters/max_cstate
+echo ""
+echo "Local Disk Settings"
+echo "==================="
+echo ""
+/opt/tss/bin/scbtools.py --show-hardware | grep Disk
+echo ""
+/opt/dell/srvadmin/bin/omreport storage controller controller=0 info=pdslotreport | grep Slot
+echo ""
+/opt/dell/srvadmin/bin/omreport storage pdisk controller=0|egrep "^Name|^ID|^State|^Status|^Firmware"
+echo ""
+echo "File System Utilisation"
+echo "======================="
+echo ""
+df -hlP | grep vg
+echo ""
+echo "File Systems"
+echo "================="
+ls -ld /apps /apps/logs /apps/cores /puma /home/lynxprod/ /home/lynxrel /home/lynxsupp
+echo ""
+acl=`rpm -qa | grep acl`
+if [ "$acl" != "" ]; then
+  for FS in /apps /apps/logs /apps/cores /puma /home/lynxprod /home/lynxrel /home/lynxsupp /apps/www /apps/logs/lynxprod /apps/data /ion; do /usr/bin/getfacl $FS; done
+fi
+echo ""
+echo "LVM Configuration"
+echo "================="
+echo ""
+"$PVS"
+echo ""
+"$VGS"
+echo ""
+"$LVS"
+echo ""
+echo "Network Settings"
+echo "================"
+echo ""
+/opt/tss/bin/scbtools.py --show-nic-status
+echo ""
+/bin/rm -f /tmp/IPs
+/opt/SoD/linux-nic-rep > /tmp/IPs
+/bin/cat /tmp/IPs
+echo ""
+if [ -f /proc/net/bonding/bond0 ]; then
+  echo "Bond configured using ........"
+  echo ""
+  cat /proc/net/bonding/bond0 | egrep 'Slave Interface|Permanent HW addr'
+  cat /proc/net/bonding/bond0 | grep "Currently Active Slave"
+  echo ""
+fi
+echo ""
+echo "Network Stats"
+echo "============="
+echo ""
+/bin/netstat -i | column -t
+echo ""
+echo "Routing Table"
+echo "============="
+/bin/netstat -rn
+echo ""
+echo "Network Switch Settings"
+echo "======================="
+echo ""
+/opt/SoD/linux-nic-switch
+echo ""
+echo "DNS Resolver Settings"
+echo "====================="
+echo ""
+cat /etc/resolv.conf
+echo ""
+echo "Time Sync Settings"
+echo "=================="
+echo ""
+PTP=`rpm -q sfptpd | grep "not installed"`
+if [ "$PTP" = "" ]; then
+  echo "Server using PTP"
+  echo ""
+  if [ "$RH6" == "true" ]; then
+    /usr/bin/tkstatus
+  else
+    /bin/tkstatus
+  echo ""
+  fi
+else
+  echo "Server using NTP"
+  /usr/bin/ntpstat
+  echo ""
+  /usr/sbin/ntpq -p
+  echo ""
+  /usr/sbin/ntpq -c rl
+  echo ""
+fi
+echo ""
+echo "TCP Keep Alive"
+echo "=============="
+sysctl -a | grep net.ipv4.tcp_keepalive_time
+echo ""
+echo "Account Settings"
+echo "================"
+echo ""
+kdb=`grep kdb /etc/passwd`
+if [ "$kdb" != "" ]; then
+  for acc in kdbprod kdbsupp kdbrel; do echo $acc; chage -l $acc; echo ""; done
+fi
+lynx=`grep lynx /etc/passwd`
+if [ "$lynx" != "" ]; then
+  for acc in lynxprod lynxrel lynxsupp ; do echo $acc; chage -l $acc; echo ""; done
+fi
+itrs=`grep lynx /etc/passwd`
+if [ "$lynx" != "" ]; then
+  for acc in itrs ; do echo $acc; chage -l $acc; echo ""; done
+fi
+echo ""
+echo "ulimit Settings"
+echo "==============="
+echo ""
+ulimit -Hn
+echo ""
+echo "Power Supply Settings"
+echo "====================="
+echo ""
+/opt/dell/srvadmin/bin/omreport chassis pwrsupplies | egrep 'Status|Location'
+echo ""
+echo "UNIX PATCHING REV"
+echo "================="
+echo ""
+echo "Fan Settings"
+echo "============"
+echo ""
+/opt/dell/srvadmin/bin/omreport chassis fans | egrep 'Status|Probe Name'
+echo ""
+echo "Battery Settings"
+echo "================"
+echo ""
+/opt/dell/srvadmin/bin/omreport chassis batteries
+echo ""
+echo "PERC Battery Settings"
+echo "====================="
+echo ""
+/opt/dell/srvadmin/bin/omreport storage battery
+echo ""
+echo "Dell ESM Log Errors"
+echo "==================="
+echo ""
+/opt/dell/srvadmin/bin/omreport system esmlog | grep -v 'Non-Critical' | grep Critical -A2
+echo ""
+echo "Agent Versions"
+echo "=============="
+echo ""
+rpm -qi ganglia-gmond | egrep 'Name|Version|Release'
+echo ""
+echo "Agent Status"
+echo "============"
+echo ""
+SAN=`cat /proc/scsi/scsi | grep -i hitachi`
+if [ "$SAN" != "" ]; then
+  echo "SAN Connectivity"
+  echo "================"
+  echo ""
+  echo "SAN Status:"
+  /opt/DynamicLinkManager/bin/dlnkmgr view -sys
+  echo ""
+  echo SAN Disks:
+  /opt/DynamicLinkManager/bin/dlnkmgr view -drv
+  echo ""
+  echo "SAN LUNs:"
+  /sbin/dlmcfgmgr -v
+  echo ""
+  /opt/DynamicLinkManager/bin/dlnkmgr view -lu
+  echo ""
+  echo "SAN Paths:"
+  /opt/DynamicLinkManager/bin/dlnkmgr view -path
+fi
+
+touch /tmp/SOD-COMPLETE
+
+exit 0

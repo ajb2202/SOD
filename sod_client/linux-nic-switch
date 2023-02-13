@@ -1,0 +1,26 @@
+RH6=false
+RH7=false
+
+RHL=`cat /etc/redhat-release | awk '{print $7}' | cut -d. -f1`
+if [ "$RHL" = "6" ]; then
+  timeout=/usr/bin/timeout
+else
+  timeout=/bin/timeout
+fi
+
+cat /proc/net/bonding/bond0 | grep "Slave Interface" | cut -d: -f2 | sed 's/^[ \t]*//;s/[ \t]*$//' > /tmp/slaves
+while read nic
+do
+  $timeout 30 /usr/sbin/tcpdump -i $nic -v -s 1500 -c 1 '(ether[12:2]=0x88cc or ether[20:2]=0x2000)' |egrep 'Interface.Name|System.Name|PVID'|awk -F: '{print $2}' > /tmp/$nic.tcpdump
+done < /tmp/slaves
+
+while read nic
+do
+  echo "Switch info for $nic"
+  echo "===================="
+  grep -i 'eci' /tmp/$nic.tcpdump > /tmp/$nic.switchinfo
+  cat /tmp/$nic.switchinfo
+  rm -f /tmp/$nic.tcpdump
+  echo ""
+done < /tmp/slaves
+rm -f /tmp/slaves

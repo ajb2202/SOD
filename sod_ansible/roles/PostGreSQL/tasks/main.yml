@@ -1,0 +1,69 @@
+---
+# tasks file for PostGres
+#
+
+- name: Ensure PostgreSQL base directory exists.
+  file:
+    path: "{{ postgresql_base_dir }}"
+    state: directory
+    mode: 0755
+
+- name: "Testing that {{ postgresql_base_dir }} is a mount point"
+  fail:
+    msg: "{{ postgresql_base_dir }} must be a mount point"
+  when: not postgresql_base_dir is is_mount  
+
+- name: Directories | Directory for postgres
+  file:
+    path: "{{ item.dir }}"
+    state: directory
+    mode: "{{ item.perm }}"
+  with_items: "{{ pgresdirs }}"
+
+- name: Disable THP - postgres Requirement
+  shell: |
+    /sbin/grubby --update-kernel=ALL --args="transparent_hugepage=never"
+    echo "never" >> /sys/kernel/mm/transparent_hugepage/enabled 
+    grub2-mkconfig -o /boot/grub2/grub.cfg
+
+#- name: Copy the dbservices repo into repos dircetory
+#  copy:
+#    src: dbservices.repo
+#    dest: /etc/yum.repos.d/dbservices.repo
+
+- name: Install required postgres packages
+  yum:
+    state: present
+    name: "{{ pgresrpm }}"
+  tags: install_pkgs
+
+- name: Ensure PostgreSQL data directory exists.
+  file:
+    path: "{{ postgresql_data_dir }}"
+    owner: "{{ postgresql_user }}"
+    group: "{{ postgresql_group }}"
+    state: directory
+    mode: 0700
+
+- name: Check if PostgreSQL database is initialized.
+  stat:
+    path: "{{ postgresql_data_dir }}/PG_VERSION"
+  register: pgdata_dir_version
+
+- name: Ensure PostgreSQL database is initialized.
+  command: "sh /usr/pgsql-10/config/runInitDB"
+  when: not pgdata_dir_version.stat.exists
+#   See: https://github.com/ansible/ansible/issues/16048#issuecomment-229012509
+  vars:
+    ansible_ssh_pipelining: true
+
+- include_tasks: configure.yml
+
+- name: Force Handlers to run now to restart DB before Making connections
+  meta: flush_handlers
+
+#Configure PostGreSQL Users, DB, Tables
+
+#- import_tasks: users.yml
+- import_tasks: databases.yml
+- import_tasks: tables.yml
